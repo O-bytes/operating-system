@@ -52,7 +52,7 @@ impl TrieNode {
 ///
 /// Built at boot by walking `src/`. Updated incrementally by the watcher.
 /// The root node represents the `fs_root` directory itself.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Trie {
     pub root: TrieNode,
 }

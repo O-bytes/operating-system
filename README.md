@@ -1,125 +1,132 @@
 # 0-Bytes OS
 
-An operating system where **no file ever contains data**.
+Un système d'exploitation où **aucun fichier ne contient jamais de données**.
 
-All information is encoded in file and folder **names**, directory **hierarchy**, file **existence**, and **metadata** (timestamps). The filesystem IS the computer. Every `touch` is a CPU instruction, every `rm` is memory deallocation, every `mv` is a data transformation, every `mkdir` is memory allocation.
+Toute l'information est encodée dans les **noms** de fichiers et dossiers, la **hiérarchie** des répertoires, l'**existence** des fichiers et les **métadonnées** (horodatages). Le système de fichiers EST l'ordinateur. Chaque `touch` est une instruction CPU, chaque `rm` est une désallocation mémoire, chaque `mv` est une transformation de données, chaque `mkdir` est une allocation mémoire.
 
-A Rust engine called **Pith** observes the filesystem, interprets it as a living system, and exposes it to any program in any language.
+Un moteur Rust appelé **Pith** observe le système de fichiers, l'interprète comme un système vivant, et l'expose à tout programme dans n'importe quel langage.
 
-## The Four Primitives
+## Pourquoi
 
-| Command | OS Semantic |
-|---------|------------|
-| `touch` | Assert / Signal / Allocate a bit |
-| `rm`    | Retract / Deallocate / Negate |
-| `mv`    | Transform / Rename / Reassign |
-| `mkdir` | Allocate scope / Open namespace |
+- **0 espace de stockage requis** — Aucune donnée n'est jamais écrite dans un fichier. Toute l'information vit dans les noms, les chemins et les métadonnées. Stocker et manipuler des données ne coûte littéralement aucun octet de contenu disque.
+- **Protocole de communication low-level sur la machine hôte** — Le canal de communication est le système de fichiers lui-même, via un socket Unix. Pas de serveur HTTP, pas de framework, pas de sérialisation lourde. Juste `touch`, `rm`, `mv`, `mkdir` — les primitives les plus basses du noyau. N'importe quel langage disposant d'I/O fichier peut interagir nativement.
+- **Un système d'exploitation virtuel, discret et inhabituel** — 0-Bytes vit entièrement dans un répertoire. Il ne laisse aucune trace conventionnelle : pas de processus suspect, pas de binaire exotique en mémoire, pas de port réseau ouvert. Son fonctionnement repose sur des opérations de fichiers banales, invisibles dans un audit classique.
+- **Parfait pour les opérations database haute performance, haute discrétion d'empreinte système** — Les requêtes sont des traversées de trie en mémoire. Pas de moteur SQL, pas de daemon lourd. L'empreinte système est quasi nulle : quelques fichiers vides et un processus Rust léger. Idéal pour des scénarios où la performance et la discrétion sont essentielles.
 
-There is no other way to change state.
+## Les quatre primitives
 
-## Three Node Classes
+| Commande | Sémantique OS |
+|----------|---------------|
+| `touch`  | Affirmer / Signaler / Allouer un bit |
+| `rm`     | Rétracter / Désallouer / Nier |
+| `mv`     | Transformer / Renommer / Réassigner |
+| `mkdir`  | Allouer une portée / Ouvrir un espace de noms |
 
-Every filesystem entry is classified by how its name begins:
+Il n'existe aucun autre moyen de changer l'état.
+
+## Trois classes de nœuds
+
+Chaque entrée du système de fichiers est classifiée selon le début de son nom :
 
 ```
-blue          → Data node       (the name IS the value)
--expected     → Instruction node (- is a logic door: "state pointer")
-€$price       → Pointer node    (€ escapes: literal "$price", not schema)
+blue          → Nœud de données    (le nom EST la valeur)
+-expected     → Nœud d'instruction (- est une porte logique : "pointeur d'état")
+€$price       → Nœud pointeur     (€ échappe : "$price" littéral, pas un schéma)
 ```
 
-## Logic Doors
+## Portes logiques
 
-Logic doors are reserved characters that act as transformer functions. The alphabet is **self-describing**: the engine reads `src/hard/reserved/` at boot. Add a file, extend the language.
+Les portes logiques sont des caractères réservés qui agissent comme des fonctions de transformation. L'alphabet est **auto-descriptif** : le moteur lit `src/hard/reserved/` au démarrage. Ajoutez un fichier, étendez le langage.
 
-`€` (U+20AC) is the only hardcoded value — the **axiom**. It escapes the next character from logic door interpretation.
+`€` (U+20AC) est la seule valeur codée en dur — l'**axiome**. Il échappe le caractère suivant de l'interprétation comme porte logique.
 
-| Char | Name | Char | Name | Char | Name |
-|------|------|------|------|------|------|
-| `€` | Escape | `$` | Schema | `-` | State |
-| `!` | Signal | `#` | Channel | `§` | Permission |
-| `~` | Number | `@` | Dict Key | `:` | Binding |
-| `[` `]` | Array | `{` `}` | Object | `(` `)` | Raw Value |
-| `*` | Compiled | `+` | Constant | `\|` | Value Sep |
-| `,` | Object Sep | `_` | Wildcard | `^` | Priority |
-| `&` | Async | `?` | Query | `%` | Modulo |
-| `<` | Input | `>` | Output | `=` | Assert |
-| `;` | Sequence | `¶` | Process | `∂` | Delta |
-| `λ` | Lambda | `∴` | Then | `∵` | Because |
-| `∞` | Loop | `▶` | Start | `⏸` | Pause |
-| `⏹` | Stop | `⌚` | Timer | | |
+| Car. | Nom | Car. | Nom | Car. | Nom |
+|------|-----|------|-----|------|-----|
+| `€` | Échappement | `$` | Schéma | `-` | État |
+| `!` | Signal | `#` | Canal | `§` | Permission |
+| `~` | Nombre | `@` | Clé Dict | `:` | Liaison |
+| `[` `]` | Tableau | `{` `}` | Objet | `(` `)` | Valeur brute |
+| `*` | Compilé | `+` | Constante | `\|` | Sép. valeur |
+| `,` | Sép. objet | `_` | Joker | `^` | Priorité |
+| `&` | Async | `?` | Requête | `%` | Modulo |
+| `<` | Entrée | `>` | Sortie | `=` | Assertion |
+| `;` | Séquence | `¶` | Processus | `∂` | Delta |
+| `λ` | Lambda | `∴` | Alors | `∵` | Parce que |
+| `∞` | Boucle | `▶` | Démarrer | `⏸` | Pause |
+| `⏹` | Arrêter | `⌚` | Minuteur | | |
 
-## The Path as Sentence
+## Le chemin comme phrase
 
-A path reads left-to-right as a sentence:
+Un chemin se lit de gauche à droite comme une phrase :
 
 ```
 src/hard/identities/001/-expected/type/identity
      │         │     │      │       │      │
-   scope     scope  slot  state:  scope   leaf
-                          expected
+   portée    portée slot  état :  portée  feuille
+                          attendu
 ```
 
-> "In the hard system, identities, slot 001, at state expected, of type identity."
+> « Dans le système hard, identités, slot 001, à l'état attendu, de type identité. »
 
-## Filesystem Layout
+## Organisation du système de fichiers
 
 ```
 src/
-├── hard/                    # ROM — immutable system definitions
-│   ├── reserved/            # 38 logic door files (the alphabet)
-│   ├── identities/          # Identity slots (unbounded)
-│   ├── groups/              # Permission groups (system, admin, developers, guests)
-│   └── types/               # Type definitions (identity, job, worker, program, ...)
-├── states/                  # Global state machine
-├── jobs/                    # Job queue (lifecycle: pending → running → completed)
-├── workers/                 # Worker pool
-├── channels/                # IPC message queues (#system, #errors)
-├── events/                  # Fire-and-forget signals (!boot, !shutdown, ...)
-├── programs/                # Installed programs (state machines as directory trees)
-├── databases/               # Semantic data in path hierarchies
-├── pointers/                # Reference tables (65,536 Unicode codepoints)
-├── schedules/               # Timed tasks (mtime = next fire time)
-├── sessions/                # Active API sessions
-├── subscriptions/           # Event subscriptions per identity
-├── logs/                    # Timestamped log entries
-└── tmp/                     # Temporary space (cleaned on boot)
+├── hard/                    # ROM — définitions système immuables
+│   ├── reserved/            # 38 fichiers de portes logiques (l'alphabet)
+│   ├── identities/          # Slots d'identité (illimités)
+│   ├── groups/              # Groupes de permissions (system, admin, developers, guests)
+│   └── types/               # Définitions de types (identity, job, worker, program, ...)
+├── states/                  # Machine à états globale
+├── jobs/                    # File d'attente de tâches (cycle : pending → running → completed)
+├── workers/                 # Pool de workers
+├── channels/                # Files de messages IPC (#system, #errors)
+├── events/                  # Signaux fire-and-forget (!boot, !shutdown, ...)
+├── programs/                # Programmes installés (machines à états sous forme d'arborescences)
+├── databases/               # Données sémantiques dans des hiérarchies de chemins
+├── pointers/                # Tables de référence (65 536 points de code Unicode)
+├── schedules/               # Tâches planifiées (mtime = prochaine exécution)
+├── sessions/                # Sessions API actives
+├── subscriptions/           # Abonnements aux événements par identité
+├── logs/                    # Entrées de journal horodatées
+└── tmp/                     # Espace temporaire (nettoyé au démarrage)
 ```
 
-## Pith — The Rust Engine
+## Pith — Le moteur Rust
 
-Pith observes the filesystem and reacts. It does not run programs — it interprets filesystem changes as instructions.
+Pith observe le système de fichiers et réagit. Il n'exécute pas de programmes — il interprète les changements du système de fichiers comme des instructions.
 
 ### Architecture
 
 ```
-Filesystem (the hardware)
+Système de fichiers (le matériel)
         │
         │ kqueue / inotify
         ▼
    ┌─────────┐
-   │ Watcher  │  watches 11 scopes recursively
+   │ Watcher  │  surveille 11 portées récursivement
    └────┬────┘
         │
    ┌────▼────┐
-   │ Parser   │  classifies segments (Data/Instruction/Pointer)
+   │ Parser   │  classifie les segments (Data/Instruction/Pointer)
    └────┬────┘
         │
    ┌────▼──────┐
-   │ Dispatcher │  routes by scope, updates in-memory trie
+   │ Dispatcher │  route par portée, met à jour le trie en mémoire
    └──┬──┬──┬──┘
       │  │  │
       ▼  ▼  ▼
-   10 Subsystems   events, channels, logs, states, jobs,
-                   workers, scheduler, programs, databases,
-                   subscriptions
+   10 sous-systèmes   events, channels, logs, states, jobs,
+                      workers, scheduler, programs, databases,
+                      subscriptions
       │  │  │
       ▼  ▼  ▼
    ┌──────────┐
-   │ Effector  │  touch / rm / mv / mkdir (with loop avoidance)
+   │ Effector  │  touch / rm / mv / mkdir (avec évitement de boucles)
    └──────────┘
 ```
 
-### Quick Start
+### Démarrage rapide
 
 ```bash
 cd pith
@@ -127,11 +134,11 @@ cargo build
 cargo run -- start --root ../src
 ```
 
-Pith boots, loads the 38 logic doors, builds an in-memory trie of ~3200 nodes, loads 777 identities and 4 permission groups, starts watching the filesystem, opens a Unix socket API on `/tmp/pith.sock`, and enters its event loop.
+Pith démarre, charge les 38 portes logiques, construit un trie en mémoire d'environ 3200 nœuds, charge 777 identités et 4 groupes de permissions, commence à surveiller le système de fichiers, ouvre une API sur un socket Unix à `/tmp/pith.sock`, et entre dans sa boucle d'événements.
 
 ### API
 
-Pith exposes a newline-delimited JSON API over a Unix domain socket.
+Pith expose une API JSON délimitée par des retours à la ligne via un socket de domaine Unix.
 
 ```python
 import socket, json
@@ -151,81 +158,81 @@ def pith(op, path="", args=None):
 pith("ping")                            # → {"ok": true, "data": "pong"}
 pith("status")                          # → {"ok": true, "data": {"status": "running", "nodes": 3228}}
 pith("ls", "hard/types")                # → ["channel","database","event","identity","job","program","schema","worker"]
-pith("touch", "events/!hello")          # creates the signal file
-pith("rm", "events/!hello")             # removes it
+pith("touch", "events/!hello")          # crée le fichier signal
+pith("rm", "events/!hello")             # le supprime
 pith("db_query", "colors")              # → ["∆psychology∆blue"]
-pith("mv", "tmp/a", {"to": "tmp/b"})   # renames a to b
+pith("mv", "tmp/a", {"to": "tmp/b"})   # renomme a en b
 ```
 
-**Operations:** `ping`, `status`, `ls`, `query`, `touch`, `mkdir`, `rm`, `mv`, `db_query`
+**Opérations :** `ping`, `status`, `ls`, `query`, `touch`, `mkdir`, `rm`, `mv`, `db_query`
 
-Since the protocol is the filesystem, any language with file I/O can also interact directly:
+Comme le protocole est le système de fichiers, tout langage disposant d'I/O fichier peut aussi interagir directement :
 
 ```bash
-touch src/events/'!my_signal'     # emit a signal
-rm src/events/'!my_signal'        # retract it
-mkdir -p src/jobs/1/-state        # create a job
-touch src/jobs/1/-state/pending   # set its state
+touch src/events/'!my_signal'     # émettre un signal
+rm src/events/'!my_signal'        # le rétracter
+mkdir -p src/jobs/1/-state        # créer une tâche
+touch src/jobs/1/-state/pending   # définir son état
 ```
 
-## Permission System
+## Système de permissions
 
-Permissions are encoded in the filesystem using the `§` logic door. No Unix chmod/chown — a custom overlay enforced by Pith.
+Les permissions sont encodées dans le système de fichiers via la porte logique `§`. Pas de chmod/chown Unix — une surcouche personnalisée appliquée par Pith.
 
 ```
 src/hard/identities/001/
-    -group/system              # group membership
-    §read/_                    # can read everything (wildcard)
+    -group/system              # appartenance au groupe
+    §read/_                    # peut tout lire (joker)
 
 src/hard/groups/developers/
-    §read/databases            # can read databases/
-    §write/jobs                # can write to jobs/
-    §execute/workers           # can execute workers
+    §read/databases            # peut lire databases/
+    §write/jobs                # peut écrire dans jobs/
+    §execute/workers           # peut exécuter des workers
 
 src/hard/groups/guests/
-    §read/databases            # can read databases/
-    §deny/hard                 # explicitly denied access to hard/
+    §read/databases            # peut lire databases/
+    §deny/hard                 # accès explicitement refusé à hard/
 ```
 
-Resolution: **deny > own > grant > default deny**.
+Résolution : **deny > own > grant > deny par défaut**.
 
-Identity tiers derived from the first digit: 0xx=omni, 1xx=shadow, 2xx=superroot, 3xx=root, 4xx=admin, 5xx=permissioned, 6xx=user, 7xx=shared, 8xx=guest, 9xx=digitalconsciousness.
+Niveaux d'identité dérivés du premier chiffre : 0xx=omni, 1xx=shadow, 2xx=superroot, 3xx=root, 4xx=admin, 5xx=permissioned, 6xx=user, 7xx=shared, 8xx=guest, 9xx=digitalconsciousness.
 
 ## Documentation
 
-| Document | Content |
+| Document | Contenu |
 |----------|---------|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Vision, primitives, event loop, boot/shutdown |
-| [docs/RESERVED_VALUES.md](docs/RESERVED_VALUES.md) | Complete logic door alphabet, the `€` escape mechanism |
-| [docs/NAMING.md](docs/NAMING.md) | Naming grammar, segment classification, path-as-sentence |
-| [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Identity model, `§` verbs, resolution algorithm |
-| [docs/FILESYSTEM.md](docs/FILESYSTEM.md) | Full filesystem layout, scaling strategy |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Vision, primitives, boucle d'événements, démarrage/arrêt |
+| [docs/RESERVED_VALUES.md](docs/RESERVED_VALUES.md) | Alphabet complet des portes logiques, mécanisme d'échappement `€` |
+| [docs/NAMING.md](docs/NAMING.md) | Grammaire de nommage, classification des segments, chemin-comme-phrase |
+| [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Modèle d'identité, verbes `§`, algorithme de résolution |
+| [docs/FILESYSTEM.md](docs/FILESYSTEM.md) | Organisation complète du système de fichiers, stratégie de mise à l'échelle |
 
-## Project Structure
+## Structure du projet
 
 ```
 0-bytes/
-├── src/              # The 0-bytes OS filesystem (zero-byte files only)
-├── docs/             # Architecture documentation
-├── pith/             # The Rust engine
+├── src/              # Le système de fichiers 0-bytes OS (fichiers de zéro octet uniquement)
+├── docs/             # Documentation d'architecture
+├── pith/             # Le moteur Rust
 │   ├── Cargo.toml
 │   └── src/
-│       ├── main.rs           # CLI entry point
-│       ├── alphabet.rs       # Self-describing logic door loader
-│       ├── parser.rs         # Segment classifier
-│       ├── trie.rs           # In-memory filesystem index
-│       ├── identity.rs       # Identity + privilege tiers
-│       ├── permissions.rs    # Permission engine
-│       ├── watcher.rs        # Filesystem watcher
-│       ├── dispatcher.rs     # Event routing + trie updates
-│       ├── effector.rs       # Filesystem writer
-│       ├── api/              # Unix socket server
-│       └── subsystems/       # 10 reactive subsystems
-└── .gitmodules       # pointers + databases submodules
+│       ├── main.rs           # Point d'entrée CLI
+│       ├── alphabet.rs       # Chargeur de portes logiques auto-descriptif
+│       ├── parser.rs         # Classificateur de segments
+│       ├── trie.rs           # Index du système de fichiers en mémoire
+│       ├── identity.rs       # Identité + niveaux de privilèges
+│       ├── permissions.rs    # Moteur de permissions
+│       ├── watcher.rs        # Surveillant du système de fichiers
+│       ├── dispatcher.rs     # Routage d'événements + mises à jour du trie
+│       ├── effector.rs       # Écrivain du système de fichiers
+│       ├── api/              # Serveur socket Unix
+│       └── subsystems/       # 10 sous-systèmes réactifs
+└── .gitmodules       # sous-modules pointers + databases
 ```
 
-**28 Rust source files. 86 tests. ~1600 lines of implementation.**
+**28 fichiers source Rust. 86 tests. ~1600 lignes d'implémentation.**
 
-## License
+## Licence
 
-TBD
+À déterminer
