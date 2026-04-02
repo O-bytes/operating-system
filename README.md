@@ -233,6 +233,126 @@ Niveaux d'identité dérivés du premier chiffre : 0xx=omni, 1xx=shadow, 2xx=sup
 
 **28 fichiers source Rust. 86 tests. ~1600 lignes d'implémentation.**
 
+## Benchmarks
+
+Lancez les benchmarks vous-même :
+
+```bash
+cd pith
+
+# Stress test complet (résultats instantanés)
+cargo run --release --bin stress
+
+# Personnaliser la charge
+cargo run --release --bin stress -- --jobs 5000 --identities 1000 --api-clients 20
+
+# Micro-benchmarks Criterion (analyse statistique, rapport HTML)
+cargo bench
+# Ouvrir target/criterion/report/index.html
+```
+
+### C'est rapide comment, "zéro octets" ?
+
+Les chiffres ci-dessous ont été mesurés sur un MacBook Pro (Apple Silicon). Toutes les opérations travaillent avec des fichiers de zéro octet — aucun contenu n'est jamais lu ni écrit.
+
+#### Créer et gérer de l'état
+
+Chaque changement d'état dans 0-Bytes OS est une opération filesystem. Voici ce que ça coûte :
+
+| Ce que vous faites | Comment ça marche | Débit | Latence |
+|---|---|---|---|
+| Créer un signal | `touch events/!alert` | **14 245/s** | 70 µs |
+| Lire un état | `stat jobs/1/-state/running` | **178 593/s** | 5.6 µs |
+| Transitioner un état | `rm` ancien + `touch` nouveau | **10 940/s** | 91 µs |
+| Supprimer un signal | `rm events/!alert` | **31 108/s** | 32 µs |
+| Allouer une portée | `mkdir -p jobs/1/-state` | **4 998/s** | 200 µs |
+
+On peut créer et transitionner **10 000 jobs par seconde** avec des appels filesystem bruts.
+
+#### Exécuter des jobs de bout en bout
+
+Un cycle de vie complet de job — créer la structure, définir pending, transitionner vers running, compléter avec un signal :
+
+| Phase | Ce qui se passe | Débit |
+|---|---|---|
+| Créer un job | `mkdir` + `touch` (type, état, propriétaire) | **2 525 jobs/s** |
+| Démarrer un job | `rm pending` + `touch running` | **10 940/s** |
+| Compléter un job | `rm running` + `touch completed` + `touch !completed` | **7 221/s** |
+| Cycle complet | Créer → démarrer → compléter | **~1 500 jobs/s** |
+
+#### Requêter des données
+
+Le trie en mémoire sert les lectures sans toucher le filesystem :
+
+| Requête | Ce qu'elle fait | Débit | Latence |
+|---|---|---|---|
+| Lookup d'un chemin profond | `hard/identities/042/-expected/type/identity` | **8,5M/s** | 0.1 µs |
+| Lister 200 enfants | `ls hard/identities/` | **3,5M/s** | 0.3 µs |
+| Requête de set en base | « membres de psychology/blue/effects » | **1,7M/s** | 0.6 µs |
+
+A 8,5 millions de lookups par seconde, le trie n'est pas le goulot d'étranglement — c'est le filesystem.
+
+#### Vérifier les permissions
+
+Résolution des permissions (deny > own > grant > deny par défaut) à travers les règles identité + groupe :
+
+| Scénario | Débit | Latence |
+|---|---|---|
+| Autorisé (développeur lit database) | **6,9M vérifications/s** | 0.15 µs |
+| Refusé (invité écrit dans hard/) | **20,1M vérifications/s** | 0.05 µs |
+| Joker (groupe system, `§read/_`) | **7,1M vérifications/s** | 0.14 µs |
+
+Le chemin deny est le plus rapide car il court-circuite dès la première règle `§deny` correspondante.
+
+#### Débit de l'API
+
+L'API sur socket Unix sert des requêtes JSON de manière concurrente :
+
+| Charge | Débit | Latence moyenne |
+|---|---|---|
+| 5 clients concurrents, 200 req chacun | **295 556 req/s** | 3.4 µs |
+
+Les lectures API (`ls`, `query`, `status`) interrogent le trie, pas le filesystem. Les écritures (`touch`, `rm`) passent par l'effector avec évitement de boucle.
+
+#### Parser l'alphabet des portes logiques
+
+Chaque nom de fichier est classifié (Data, Instruction ou Pointer) en vérifiant son premier caractère contre l'alphabet réservé de 38 caractères :
+
+| Type de segment | Exemple | Latence (Criterion) |
+|---|---|---|
+| Nœud de données | `blue` | **90 ns** |
+| Instruction Unicode | `§read` | **136 ns** |
+| Instruction ASCII | `-expected` | **194 ns** |
+| Pointeur (échappé) | `€$price` | **164 ns** |
+| Nom de données long (72 car.) | `list_of_effects_on_humans_when...` | **2.6 µs** |
+
+#### Temps de démarrage
+
+Démarrage à froid — lire l'alphabet, parcourir le filesystem, construire le trie, charger les permissions, démarrer le watcher et le serveur API :
+
+| Taille du filesystem | Temps de boot |
+|---|---|
+| 200 identités, 50 jobs (~1 300 nœuds) | **58 ms** |
+| 777 identités, OS complet (~3 200 nœuds) | **~4 s** (dominé par le parcours filesystem) |
+
+#### Traitement des événements par les sous-systèmes
+
+Quand un événement filesystem arrive, il traverse le pipeline complet — watcher → parser → dispatcher → sous-système → effector :
+
+| Quoi | Débit |
+|---|---|
+| Dispatch vers le sous-système correspondant (10 enregistrés) | **1,9M événements/s** |
+| Signal d'événement → fichier d'historique créé | un aller-retour du pipeline |
+| Changement d'état de job → log + événement émis | un aller-retour du pipeline |
+
+### Ce que les chiffres signifient
+
+- **Lire un état est essentiellement gratuit** — 0.1 µs par lookup dans le trie, aucune I/O disque
+- **Écrire un état coûte ~70 µs** — un appel `touch`, limité par le filesystem
+- **Le moteur ajoute un surcoût négligeable** — vérification de permission (0.15 µs) + dispatch (0.5 µs) + parsing (0.2 µs) = moins d'1 µs au-dessus du coût filesystem
+- **L'API n'est pas le goulot** — à 295k req/s, on atteint les limites du filesystem bien avant celles du socket
+- **Les permissions passent à l'échelle** — 20M vérifications/s signifie qu'on peut enforcer les permissions sur chaque opération sans impact mesurable
+
 ## Licence
 
-À déterminer
+A déterminer
