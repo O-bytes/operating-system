@@ -1,6 +1,0 @@
-[submodule "pointers"]
-	path = pointers
-	url = git@github.com:O-bytes/pointers.git
-[submodule "databases"]
-	path = databases
-	url = git@github.com:O-bytes/databases.git
