@@ -21,6 +21,7 @@
 
 pub mod alphabet;
 pub mod api;
+pub mod auth;
 pub mod boot;
 pub mod config;
 pub mod dispatcher;

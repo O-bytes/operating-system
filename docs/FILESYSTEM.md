@@ -78,21 +78,34 @@ hard/reserved/
 
 ### hard/identities/
 
-777 identity slots. Each is a numbered directory containing its properties.
+Identity slots (unbounded). Each is a numbered directory containing its properties.
 
 ```
 hard/identities/
-├── 001/
+├── 001/                             # Omni tier (first digit = 0)
+│   ├── -expected/type/identity      # Type declaration
+│   ├── -name/admin                  # Human-readable name
+│   ├── -secret/.argon2id.v=19...    # Password hash (argon2id, in FILENAME)
+│   ├── -uid/501                     # Unix UID mapping (auto session binding)
+│   ├── -group/{group_name}          # Group membership
+│   ├── §read/_                      # Can read everything (wildcard)
+│   ├── §write/_                     # Can write everything
+│   ├── §execute/_                   # Can execute everything
+│   └── §own/_                       # Owns everything
+├── 601/                             # User tier (first digit = 6)
 │   ├── -expected/type/identity
-│   ├── -name/{name}
-│   ├── -group/{group_name}
-│   ├── §read/{scope}
-│   └── §write/{scope}
-├── 002/
-│   └── ...
-└── 777/
-    └── ...
+│   ├── -name/alice
+│   ├── -secret/.argon2id.v=19...    # Optional: password for API auth
+│   ├── -uid/502                     # Optional: Unix UID mapping
+│   ├── -group/developers
+│   ├── §read/databases/
+│   └── §write/jobs/
+└── ...
 ```
+
+**Password storage**: The `-secret/` child contains a zero-byte file whose **name** is the argon2id hash in PHC format with `$` replaced by `.` for filesystem compatibility. No file ever contains data.
+
+**UID mapping**: The `-uid/{unix_uid}` files enable automatic session binding. When a client connects via Unix socket, Pith extracts the peer UID and maps it to the identity.
 
 ### hard/groups/
 
@@ -273,14 +286,17 @@ schedules/
 
 ## sessions/ — Active Sessions
 
-One directory per active API/CLI connection.
+One directory per active API/CLI connection. Created automatically by the engine when a client connects, destroyed on disconnect.
 
 ```
 sessions/
 └── ~{id}/
-    ├── -identity/{id}       # Bound identity
+    ├── -identity/{id}       # Bound identity (updated on authenticate)
+    ├── -uid/{unix_uid}      # Peer Unix UID
     └── -state/active        # Session state
 ```
+
+Sessions are cleaned up on boot (orphans from a previous crash) and on graceful shutdown.
 
 ## subscriptions/ — Event Subscriptions
 

@@ -16,16 +16,25 @@ Each identity is a numbered slot under `src/hard/identities/`:
 src/hard/identities/
     001/
         -expected/type/identity     # Type declaration
-        -name/alice                 # Human-readable name
-        -group/admin                # Group membership (one file per group)
+        -name/admin                 # Human-readable name
+        -secret/.argon2id.v=19...   # Password hash (in the FILENAME, zero bytes)
+        -uid/501                    # Unix UID mapping (for session auto-binding)
+        -group/system               # Group membership (one file per group)
         -group/developers           # Can belong to multiple groups
-        §read/databases/            # Direct permission grant
+        §read/_                     # Direct permission grant (wildcard)
         §write/jobs/
-    002/
-        ...
+        §own/databases/translations/
+    601/
+        -expected/type/identity
+        -name/alice
+        -secret/.argon2id.v=19...   # Each identity can have its own password
+        -uid/502                    # Maps Unix UID 502 to this identity
+        -group/developers
+        §read/databases/
+        §write/jobs/
 ```
 
-Identity numbers range from `001` to `777`. The number IS the identity — no content needed.
+Identity numbers are unbounded. The number IS the identity — no content needed. The privilege tier is derived from the **first digit** of the identity number.
 
 ### Privilege Hierarchy
 
@@ -151,17 +160,75 @@ Target:     anything
 Match:      YES (wildcard)
 ```
 
+## Authentication
+
+### Password Storage
+
+Passwords are hashed with **argon2id** and stored as zero-byte files whose **name** encodes the PHC-format hash. This preserves the fundamental rule: no file ever contains data.
+
+```
+src/hard/identities/001/-secret/.argon2id.v=19.m=19456,t=2,p=1.SALT.DIGEST
+```
+
+The PHC format (`$argon2id$v=19$m=19456,t=2,p=1$salt$digest`) is made filename-safe by replacing `$` with `.` (reversible, since `.` never appears inside PHC field values).
+
+### First Boot
+
+On first start, if no Omni-tier (0xx) identity has a `-secret/` child, Pith either:
+- Prompts interactively for a password (if running in a TTY)
+- Requires `pith init --password <pwd>` to have been run first (non-interactive environments)
+
+This creates identity 001 with full permissions (`§read/_`, `§write/_`, `§execute/_`, `§own/_`).
+
+### Authentication Flow
+
+1. Client connects to the Unix socket → starts as Guest (800)
+2. Client sends: `{"op": "authenticate", "args": {"identity": "001", "password": "..."}}`
+3. Pith looks up `-secret/` in the trie, decodes the filename back to a PHC hash, verifies with argon2id
+4. On success: session identity is **upgraded** from Guest to the authenticated identity
+5. All subsequent operations use the new identity's permissions
+
+### UID Auto-Binding
+
+Identities can be mapped to Unix UIDs via `-uid/{unix_uid}` files:
+
+```
+src/hard/identities/601/-uid/502    # Unix UID 502 → identity 601
+```
+
+When a client connects, Pith extracts the peer UID via `peer_cred()` and automatically resolves it to the mapped identity (skipping the Guest default). The client can still call `authenticate` to switch to a different identity.
+
 ## Session Binding
 
-Permissions are enforced per-session. When a developer connects to Pith (via CLI or SDK):
+Permissions are enforced per-session. When a client connects to Pith:
 
-1. A session is created under `src/sessions/`
-2. The session is bound to an identity
-3. All operations through that session are checked against that identity's permissions
+1. Pith extracts the connecting process's UID/PID via `peer_cred()` (Unix socket credentials)
+2. The UID is resolved to an identity via the `-uid/` mapping (or defaults to Guest 800)
+3. A session directory is created under `src/sessions/`
+4. The client can upgrade their identity via the `authenticate` op
+5. All operations are checked against the session's current identity permissions
+6. On disconnect, the session is destroyed and its filesystem entries are cleaned up
 
 ```
 src/sessions/
     ~0001/
         -identity/042               # This session acts as identity 042
+        -uid/501                    # Peer Unix UID
         -state/active               # Session state
 ```
+
+### Identity Management
+
+Authenticated users with **Admin tier (4xx) or higher** can create new identities via the API:
+
+```json
+{"op": "create_identity", "args": {
+    "id": "601",
+    "name": "alice",
+    "password": "secret123",
+    "groups": ["developers"],
+    "uid": 502
+}}
+```
+
+This creates the full identity directory tree on disk. The `password`, `name`, `groups`, and `uid` fields are all optional.

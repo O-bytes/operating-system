@@ -162,20 +162,77 @@ Filesystem (the hardware)
 ### Boot Sequence
 1. Load reserved alphabet from `hard/reserved/`
 2. Build in-memory trie index by walking `src/`
-3. Load identities and groups
-4. Initialize all subsystems
-5. Start filesystem watcher
-6. `touch events/!boot`
-7. Open API listener (Unix socket)
-8. Enter event loop
+3. **First-boot check**: if no Omni identity (0xx) has a password (`-secret/`), prompt interactively or require `pith init`
+4. Rebuild trie if first-boot provisioned the admin identity
+5. Load permissions engine (identities + groups → permission rules)
+6. Load session manager (UID→identity mappings from `-uid/` nodes)
+7. Clean `tmp/` and `sessions/` (orphans from previous run)
+8. Initialize all subsystems
+9. Start filesystem watcher
+10. `touch events/!boot`
+11. Open API listener (Unix socket)
+12. Enter event loop
 
 ### Shutdown Sequence
 1. `touch events/!shutdown`
 2. Stop watcher, drain event queue
-3. Persist scheduler state (mtimes)
-4. Clean `tmp/`
-5. `rm events/!boot`
-6. Exit
+3. Clean up all active sessions (destroy filesystem entries)
+4. Persist scheduler state (mtimes)
+5. Clean `tmp/` and `sessions/`
+6. `rm events/!boot`
+7. Remove Unix socket
+8. Exit
+
+### First Boot / Init
+
+On a fresh filesystem, `pith init` (or the first `pith start`) creates the admin identity:
+
+```
+hard/identities/001/
+├── -expected/type/identity
+├── -name/admin
+├── -secret/{argon2id_hash_as_filename}
+├── §read/_
+├── §write/_
+├── §execute/_
+└── §own/_
+```
+
+The password hash is stored in the **filename** of the `-secret/` child, preserving the zero-byte philosophy. The hash uses argon2id in PHC format with `$` replaced by `.` for filesystem compatibility.
+
+### Authentication & Sessions
+
+When a client connects to the Unix socket API:
+
+1. **UCred extraction** — Pith calls `peer_cred()` on the Unix stream to get the connecting process's UID/PID
+2. **UID resolution** — The UID is mapped to a 0-bytes identity via `hard/identities/{id}/-uid/{unix_uid}`. Unknown UIDs default to Guest (800)
+3. **Session creation** — A session directory is created: `sessions/~{id}/` with `-identity/`, `-uid/`, `-state/active`
+4. **Permission enforcement** — Each API operation is checked against the session's identity permissions (when `enforce_permissions = true`)
+5. **Authentication upgrade** — The client can send `{"op": "authenticate", "args": {"identity": "001", "password": "..."}}` to upgrade the session from Guest to a verified identity
+6. **Session cleanup** — On disconnect, the session is destroyed and its filesystem entries are removed
+
+Password hashes are stored as argon2id in the **filename** of `-secret/` children:
+```
+hard/identities/001/-secret/.argon2id.v=19.m=19456,t=2,p=1.SALT.DIGEST
+```
+
+This preserves the core philosophy: no file ever contains data.
+
+### Identity Management via API
+
+Authenticated users with Admin tier (4xx) or higher can create new identities:
+
+```json
+{"op": "create_identity", "args": {
+    "id": "601",
+    "name": "alice",
+    "password": "secret123",
+    "groups": ["developers"],
+    "uid": 502
+}}
+```
+
+This creates the full identity directory tree on disk, including password hash, group memberships, and optional UID mapping.
 
 ### Self-Describing Design
 The engine reads `hard/reserved/` at boot — it does NOT hardcode the logic door alphabet. The reserved alphabet, types, permissions, and programs are all defined in the filesystem itself. The engine interprets them; it does not define them.

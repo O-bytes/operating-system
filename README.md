@@ -131,10 +131,46 @@ Système de fichiers (le matériel)
 ```bash
 cd pith
 cargo build
+
+# Première fois : initialiser l'identité admin (001) avec un mot de passe
+cargo run -- init --root ../src
+# → Prompt interactif pour le mot de passe
+
+# Ou non-interactif (CI/Docker) :
+cargo run -- init --root ../src --password "mon_mot_de_passe"
+
+# Démarrer le moteur
 cargo run -- start --root ../src
 ```
 
-Pith démarre, charge les 38 portes logiques, construit un trie en mémoire d'environ 3200 nœuds, charge 777 identités et 4 groupes de permissions, commence à surveiller le système de fichiers, ouvre une API sur un socket Unix à `/tmp/pith.sock`, et entre dans sa boucle d'événements.
+Au premier démarrage, Pith vérifie qu'au moins une identité Omni (0xx) possède un mot de passe. Si ce n'est pas le cas, il propose de le créer interactivement (ou exige un `pith init` préalable en mode non-interactif).
+
+### Authentification
+
+Les clients se connectent au socket Unix en tant que Guest (800) par défaut. Pour accéder aux opérations protégées, ils s'authentifient avec un mot de passe :
+
+```python
+# S'authentifier pour upgrader la session
+pith("authenticate", args={"identity": "001", "password": "mon_mot_de_passe"})
+# → {"ok": true, "data": {"identity_id": 1, "tier": "Omni"}}
+```
+
+Les mots de passe sont hashés avec **argon2id** et stockés dans le nom du fichier (fidèle à la philosophie 0-bytes — aucun fichier ne contient de données) :
+
+```
+hard/identities/001/-secret/.argon2id.v=19.m=19456,t=2,p=1.SALT.DIGEST
+```
+
+### Sessions
+
+Chaque connexion au socket Unix crée une session :
+
+1. Pith extrait l'UID/PID du processus via `peer_cred()` (UCred)
+2. L'UID est résolu vers une identité 0-bytes via `hard/identities/{id}/-uid/{unix_uid}`
+3. Si l'UID est inconnu → fallback vers Guest (800)
+4. Le client peut ensuite s'authentifier via `authenticate` pour upgrader sa session
+
+Les sessions sont trackées dans le filesystem : `sessions/~{id}/-identity/{id}`, `-uid/{uid}`, `-state/active`.
 
 ### API
 
@@ -155,6 +191,7 @@ def pith(op, path="", args=None):
     s.close()
     return json.loads(data)
 
+# Opérations de base
 pith("ping")                            # → {"ok": true, "data": "pong"}
 pith("status")                          # → {"ok": true, "data": {"status": "running", "nodes": 3228}}
 pith("ls", "hard/types")                # → ["channel","database","event","identity","job","program","schema","worker"]
@@ -162,9 +199,23 @@ pith("touch", "events/!hello")          # crée le fichier signal
 pith("rm", "events/!hello")             # le supprime
 pith("db_query", "colors")              # → ["∆psychology∆blue"]
 pith("mv", "tmp/a", {"to": "tmp/b"})   # renomme a en b
+
+# Authentification
+pith("authenticate", args={"identity": "001", "password": "..."})
+# → {"ok": true, "data": {"identity_id": 1, "tier": "Omni"}}
+
+# Création d'identité (Admin+ requis)
+pith("create_identity", args={
+    "id": "601",
+    "name": "alice",
+    "password": "secret123",
+    "groups": ["developers"],
+    "uid": 502
+})
+# → {"ok": true, "data": {"created": "601"}}
 ```
 
-**Opérations :** `ping`, `status`, `ls`, `query`, `touch`, `mkdir`, `rm`, `mv`, `db_query`
+**Opérations :** `ping`, `status`, `ls`, `query`, `touch`, `mkdir`, `rm`, `mv`, `db_query`, `authenticate`, `create_identity`
 
 Comme le protocole est le système de fichiers, tout langage disposant d'I/O fichier peut aussi interagir directement :
 
@@ -181,8 +232,15 @@ Les permissions sont encodées dans le système de fichiers via la porte logique
 
 ```
 src/hard/identities/001/
+    -expected/type/identity    # déclaration de type
+    -name/admin                # nom lisible
+    -secret/.argon2id.v=19...  # hash du mot de passe (dans le NOM du fichier)
+    -uid/501                   # mapping UID Unix → identité
     -group/system              # appartenance au groupe
     §read/_                    # peut tout lire (joker)
+    §write/_                   # peut tout écrire
+    §execute/_                 # peut tout exécuter
+    §own/_                     # propriétaire de tout
 
 src/hard/groups/developers/
     §read/databases            # peut lire databases/
@@ -197,6 +255,23 @@ src/hard/groups/guests/
 Résolution : **deny > own > grant > deny par défaut**.
 
 Niveaux d'identité dérivés du premier chiffre : 0xx=omni, 1xx=shadow, 2xx=superroot, 3xx=root, 4xx=admin, 5xx=permissioned, 6xx=user, 7xx=shared, 8xx=guest, 9xx=digitalconsciousness.
+
+### Gestion des identités
+
+L'identité admin (001, Omni) est créée au premier boot via `pith init`. Les admins (4xx+) peuvent ensuite créer d'autres identités via l'API :
+
+```python
+# Créer un utilisateur avec mot de passe et groupes
+pith("create_identity", args={
+    "id": "601",
+    "name": "alice",
+    "password": "secret123",
+    "groups": ["developers"],
+    "uid": 502                  # optionnel: mapping UID Unix
+})
+```
+
+Les mots de passe sont stockés comme hash argon2id dans le **nom du fichier** sous `-secret/`, fidèle à la règle fondamentale : aucun fichier ne contient jamais de données.
 
 ## Documentation
 
@@ -217,21 +292,23 @@ Niveaux d'identité dérivés du premier chiffre : 0xx=omni, 1xx=shadow, 2xx=sup
 ├── pith/             # Le moteur Rust
 │   ├── Cargo.toml
 │   └── src/
-│       ├── main.rs           # Point d'entrée CLI
+│       ├── main.rs           # Point d'entrée CLI (start, init, status, stop)
 │       ├── alphabet.rs       # Chargeur de portes logiques auto-descriptif
 │       ├── parser.rs         # Classificateur de segments
 │       ├── trie.rs           # Index du système de fichiers en mémoire
 │       ├── identity.rs       # Identité + niveaux de privilèges
 │       ├── permissions.rs    # Moteur de permissions
+│       ├── auth.rs           # Authentification (argon2id, hash↔filename)
+│       ├── session.rs        # Sessions, contexte de sécurité, mapping UID
 │       ├── watcher.rs        # Surveillant du système de fichiers
 │       ├── dispatcher.rs     # Routage d'événements + mises à jour du trie
 │       ├── effector.rs       # Écrivain du système de fichiers
-│       ├── api/              # Serveur socket Unix
+│       ├── api/              # Serveur socket Unix (authenticate, create_identity, ...)
 │       └── subsystems/       # 10 sous-systèmes réactifs
 └── .gitmodules       # sous-modules pointers + databases
 ```
 
-**28 fichiers source Rust. 86 tests. ~1600 lignes d'implémentation.**
+**30 fichiers source Rust. 106 tests. ~2200 lignes d'implémentation.**
 
 ## Benchmarks
 

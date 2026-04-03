@@ -40,6 +40,12 @@ pub enum PithError {
 
     #[error("API error: {reason}")]
     Api { reason: String },
+
+    #[error("Session error: {reason}")]
+    Session { reason: String },
+
+    #[error("Authentication error: {reason}")]
+    Auth { reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, PithError>;

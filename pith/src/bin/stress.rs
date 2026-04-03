@@ -629,6 +629,9 @@ async fn main() {
         &socket_path,
         std::sync::Arc::clone(&engine.trie),
         engine.effector.clone(),
+        std::sync::Arc::clone(&engine.session_manager),
+        std::sync::Arc::clone(&engine.permissions),
+        engine.config.enforce_permissions,
     )
     .await
     .unwrap();

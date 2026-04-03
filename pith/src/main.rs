@@ -40,6 +40,24 @@ enum Commands {
         enforce: bool,
     },
 
+    /// Initialize the filesystem: create the admin identity (001) with a password.
+    ///
+    /// Run this before `pith start` on a fresh filesystem, or use it for
+    /// non-interactive provisioning in CI/Docker with `--password`.
+    Init {
+        /// Path to the 0-bytes filesystem root.
+        #[arg(short, long, default_value = "../src")]
+        root: PathBuf,
+
+        /// Admin password (if omitted, prompts interactively).
+        #[arg(short, long)]
+        password: Option<String>,
+
+        /// Log level (trace, debug, info, warn, error).
+        #[arg(short, long, default_value = "info")]
+        log_level: String,
+    },
+
     /// Show engine status.
     Status {
         /// Path for the Unix domain socket API.
@@ -97,6 +115,61 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
             // Graceful shutdown.
             boot::shutdown(&engine).await?;
+        }
+
+        Commands::Init {
+            root,
+            password,
+            log_level,
+        } => {
+            // Initialize tracing.
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| EnvFilter::new(&log_level)),
+                )
+                .init();
+
+            // Canonicalize fs_root.
+            let fs_root = root.canonicalize().map_err(|e| {
+                format!("Cannot resolve root {}: {}", root.display(), e)
+            })?;
+
+            // Load alphabet and trie to check current state.
+            let reserved_dir = fs_root.join("hard/reserved");
+            let alphabet = pith::alphabet::Alphabet::load(&reserved_dir)?;
+            let trie = pith::trie::Trie::build(&fs_root, &alphabet)?;
+
+            if boot::has_admin_with_password(&trie) {
+                println!("Admin identity with a password already exists. Nothing to do.");
+                return Ok(());
+            }
+
+            // Get the password (from flag or interactive prompt).
+            let pwd = match password {
+                Some(p) => {
+                    if p.len() < 8 {
+                        eprintln!("Error: password must be at least 8 characters.");
+                        std::process::exit(1);
+                    }
+                    p
+                }
+                None => {
+                    if !pith::auth::is_interactive() {
+                        eprintln!("Error: no --password provided and stdin is not a terminal.");
+                        eprintln!("Usage: pith init --root <path> --password <pwd>");
+                        std::process::exit(1);
+                    }
+                    pith::auth::prompt_password_interactive("Init")?
+                }
+            };
+
+            // Provision admin identity on disk.
+            boot::provision_admin_identity(&fs_root, &pwd)?;
+
+            println!("✓ Admin identity 001 created successfully.");
+            println!("  Filesystem: {}", fs_root.join("hard/identities/001").display());
+            println!("  You can now run `pith start`.");
         }
 
         Commands::Status { socket } => {

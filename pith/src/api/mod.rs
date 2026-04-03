@@ -18,6 +18,8 @@ use tokio::net::UnixListener;
 use tracing::{debug, error, info, warn};
 
 use crate::effector::Effector;
+use crate::permissions::PermissionEngine;
+use crate::session::{verb_for_op, SessionContext, SessionManager};
 use crate::trie::Trie;
 
 use self::handlers::handle_request;
@@ -30,6 +32,9 @@ pub async fn start_server(
     socket_path: &Path,
     trie: Arc<RwLock<Trie>>,
     effector: Effector,
+    session_manager: Arc<SessionManager>,
+    permissions: Arc<PermissionEngine>,
+    enforce_permissions: bool,
 ) -> crate::error::Result<tokio::task::JoinHandle<()>> {
     // Remove stale socket if it exists.
     if socket_path.exists() {
@@ -57,10 +62,47 @@ pub async fn start_server(
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
+                    // Extract UCred BEFORE splitting the stream.
+                    let (unix_uid, unix_pid) = match stream.peer_cred() {
+                        Ok(ucred) => {
+                            let uid = ucred.uid();
+                            let pid = ucred.pid();
+                            (uid, pid)
+                        }
+                        Err(e) => {
+                            warn!("Failed to extract peer credentials: {} — using defaults", e);
+                            (u32::MAX, None) // Will resolve to Guest via default fallback.
+                        }
+                    };
+
+                    // Create session.
+                    let session = session_manager.create_session(unix_uid, unix_pid);
+                    let session_id = session.id;
+
+                    // Create session filesystem entries (best-effort, non-blocking).
+                    let create_effects = SessionManager::session_effects_create(&session);
+                    tokio::spawn({
+                        let eff = effector.clone();
+                        async move {
+                            for effect in &create_effects {
+                                if let Err(e) = eff.execute(effect).await {
+                                    debug!("Session filesystem create effect failed (non-fatal): {}", e);
+                                }
+                            }
+                        }
+                    });
+
+                    let ctx = SessionContext {
+                        session_id,
+                        session_manager: Arc::clone(&session_manager),
+                        permissions: Arc::clone(&permissions),
+                        enforce: enforce_permissions,
+                    };
+
                     let trie = Arc::clone(&trie);
                     let effector = effector.clone();
                     tokio::spawn(async move {
-                        handle_connection(stream, trie, effector).await;
+                        handle_connection(stream, trie, effector, ctx).await;
                     });
                 }
                 Err(e) => {
@@ -75,23 +117,33 @@ pub async fn start_server(
 
 /// Handle a single client connection.
 ///
-/// Reads newline-delimited JSON requests, processes each, writes JSON responses.
+/// Reads newline-delimited JSON requests, checks permissions, processes each,
+/// writes JSON responses. On disconnect, cleans up the session.
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     trie: Arc<RwLock<Trie>>,
     effector: Effector,
+    ctx: SessionContext,
 ) {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
-    debug!("Client connected");
+    debug!(
+        "Client connected [session={}, identity={}]",
+        ctx.session_id,
+        ctx.identity_id()
+    );
 
     loop {
         line.clear();
         match reader.read_line(&mut line).await {
             Ok(0) => {
-                debug!("Client disconnected");
+                debug!(
+                    "Client disconnected [session={}, identity={}]",
+                    ctx.session_id,
+                    ctx.identity_id()
+                );
                 break;
             }
             Ok(_) => {
@@ -102,7 +154,26 @@ async fn handle_connection(
 
                 // Parse the request.
                 let response = match serde_json::from_str::<Request>(trimmed) {
-                    Ok(request) => handle_request(&request, &trie, &effector).await,
+                    Ok(request) => {
+                        // Permission check before dispatching to handler.
+                        if let Some(verb) = verb_for_op(&request.op) {
+                            let segments: Vec<&str> = if request.path.is_empty() {
+                                vec![]
+                            } else {
+                                request.path.split('/').filter(|s| !s.is_empty()).collect()
+                            };
+
+                            match ctx.check_permission(verb, &segments) {
+                                Ok(()) => {
+                                    handle_request(&request, &trie, &effector, &ctx).await
+                                }
+                                Err(e) => Response::error(format!("{}", e)),
+                            }
+                        } else {
+                            // No verb required (e.g., ping, authenticate) — always allowed.
+                            handle_request(&request, &trie, &effector, &ctx).await
+                        }
+                    }
                     Err(e) => Response::error(format!("Invalid JSON: {}", e)),
                 };
 
@@ -124,6 +195,17 @@ async fn handle_connection(
             Err(e) => {
                 warn!("Read error: {}", e);
                 break;
+            }
+        }
+    }
+
+    // Session cleanup: destroy in-memory session and remove filesystem entry.
+    let session_id = ctx.session_id;
+    if let Some(session) = ctx.session_manager.destroy_session(session_id) {
+        let destroy_effects = SessionManager::session_effects_destroy(&session);
+        for effect in &destroy_effects {
+            if let Err(e) = effector.execute(effect).await {
+                debug!("Session filesystem cleanup effect failed (non-fatal): {}", e);
             }
         }
     }
