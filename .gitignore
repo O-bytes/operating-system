@@ -1,0 +1,24 @@
+pith/target/
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Runtime artifacts — the engine's live state, not the OS definition
+src/events/!*
+src/events/-history/*
+src/programs/*/!run
+src/programs/*/-state/
+src/schedules/metronome
+src/tmp/*
+src/logs/*
+src/sessions/*
+!src/events/-history/.gitkeep
+!src/tmp/.gitkeep
+!src/logs/.gitkeep
+!src/sessions/.gitkeep
+
+# Local identity provisioning (created by `0b init` / `pith init`)
+src/hard/identities/*/-name/
+src/hard/identities/*/-secret/
+src/hard/identities/*/§*/

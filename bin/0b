@@ -1,0 +1,189 @@
+#!/usr/bin/env zsh
+#
+# 0b — the command-line face of 0-Bytes OS
+#
+# An operating system in which every file is empty. All information lives
+# in names, hierarchy, and modification times. This launcher wraps the
+# Pith engine with a few ergonomic commands.
+#
+# Usage:
+#   0b init                # provision the admin identity (first time only)
+#   0b up                  # start the engine (foreground)
+#   0b demo                # start the metronome: an empty file beating forever
+#   0b status
+#   0b down
+#   0b install             # symlink into ~/bin
+#
+# Everything else is forwarded to the real `pith` binary.
+#
+# Location:
+#   This script lives in the repo at bin/0b.
+#   It auto-detects the repo root even when called via symlink.
+#
+
+set -euo pipefail
+
+# --- Colors (only if stdout is a tty) ---------------------------------------
+if [[ -t 1 ]]; then
+  BOLD=$'\033[1m'
+  DIM=$'\033[2m'
+  GREEN=$'\033[32m'
+  BLUE=$'\033[34m'
+  MAGENTA=$'\033[35m'
+  CYAN=$'\033[36m'
+  RESET=$'\033[0m'
+else
+  BOLD='' DIM='' GREEN='' BLUE='' MAGENTA='' CYAN='' RESET=''
+fi
+
+say() { print -r -- "${*}" }
+say_green() { print -r -- "${GREEN}${*}${RESET}" }
+say_dim()   { print -r -- "${DIM}${*}${RESET}" }
+
+# --- Find the real 0-bytes repo root (works through symlinks) ---------------
+find_repo_root() {
+  local target="$0"
+  # Resolve symlinks (macOS readlink is limited, so we do it manually)
+  while [[ -L "$target" ]]; do
+    local link="$(readlink "$target")"
+    if [[ "$link" = /* ]]; then
+      target="$link"
+    else
+      target="$(cd "$(dirname "$target")" && pwd -P)/$link"
+    fi
+  done
+
+  local dir="$(cd "$(dirname "$target")" && pwd -P)"
+  # Walk upward until we find the signature of a 0-bytes checkout
+  while [[ "$dir" != "/" ]]; do
+    if [[ -d "$dir/pith" && -f "$dir/pith/Cargo.toml" && -d "$dir/src/hard/reserved" ]]; then
+      print -r -- "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+
+  # Fallback: assume we are inside the repo (common during development)
+  if [[ -d "pith" && -f "pith/Cargo.toml" ]]; then
+    pwd -P
+    return 0
+  fi
+
+  print -u 2 "0b: could not locate 0-bytes repository root."
+  print -u 2 "    Make sure you are running this from inside the checkout or via a proper symlink."
+  return 1
+}
+
+REPO_ROOT="$(find_repo_root)"
+SRC_ROOT="$REPO_ROOT/src"
+PITH_DIR="$REPO_ROOT/pith"
+PITH_BIN="$PITH_DIR/target/debug/pith"
+PITH_RELEASE="$PITH_DIR/target/release/pith"
+SOCKET="/tmp/pith.sock"
+
+# Prefer release binary if it exists and is newer than debug
+choose_pith() {
+  if [[ -x "$PITH_RELEASE" ]]; then
+    if [[ ! -x "$PITH_BIN" || "$PITH_RELEASE" -nt "$PITH_BIN" ]]; then
+      print -r -- "$PITH_RELEASE"
+      return
+    fi
+  fi
+  print -r -- "$PITH_BIN"
+}
+
+PITH_CMD="$(choose_pith)"
+
+run_pith() {
+  if [[ -x "$PITH_CMD" ]]; then
+    exec "$PITH_CMD" "$@"
+  else
+    # Development mode: use cargo run (slower but always correct)
+    cd "$PITH_DIR"
+    exec cargo run --quiet -- "$@"
+  fi
+}
+
+# --- Helper: touch a file with a past mtime (a due schedule fires at once) --
+arm_schedule_now() {
+  local name="$1"
+  touch -t "$(date -v -1M +%Y%m%d%H%M.%S)" "$SRC_ROOT/schedules/$name"
+}
+
+# --- Commands ----------------------------------------------------------------
+cmd="${1:-help}"
+if (( $# > 0 )); then shift; fi
+
+case "$cmd" in
+  help|-h|--help)
+    cat <<EOF
+${BOLD}${CYAN}0b${RESET} — the command-line face of 0-Bytes OS
+
+${BOLD}Commands:${RESET}
+  0b init        Provision the admin identity (first time only)
+  0b up          Start the Pith engine (foreground)
+  0b demo        Start the metronome — a two-state machine beating forever,
+                 made entirely of empty files (run while the engine is up)
+  0b status      Show engine + socket status
+  0b down        Stop the engine
+  0b install     Symlink this script into ~/bin/0b
+
+${BOLD}Everything else${RESET} is forwarded to the real ${BOLD}pith${RESET} binary:
+  0b start --root /path --log-level debug
+
+The filesystem ${BOLD}is${RESET} the operating system.
+This command is just the door.
+EOF
+    ;;
+
+  install)
+    local target_bin="$HOME/bin/0b"
+    mkdir -p "$(dirname "$target_bin")"
+
+    local source
+    source="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+
+    if [[ -L "$target_bin" ]]; then
+      rm "$target_bin"
+    fi
+    ln -s "$source" "$target_bin"
+    say_green "✓ Symlinked $source → $target_bin"
+    say_dim "  0b should now be in your PATH (you may need to restart your shell or run 'hash -r')."
+    say "  Try: 0b --help"
+    ;;
+
+  up|start)
+    say "${BLUE}Starting Pith engine...${RESET}"
+    run_pith start --root "$SRC_ROOT" "$@"
+    ;;
+
+  down|stop)
+    run_pith stop --socket "$SOCKET" "$@"
+    ;;
+
+  status)
+    run_pith status --socket "$SOCKET" "$@"
+    ;;
+
+  init)
+    run_pith init --root "$SRC_ROOT" "$@"
+    ;;
+
+  demo)
+    say "${MAGENTA}Starting the metronome...${RESET}"
+    arm_schedule_now metronome
+    touch "$SRC_ROOT/programs/metronome/!run"
+    say_green "✓ The metronome is armed."
+    say ""
+    say "Watch the beat (one empty file, moving forever):"
+    say_dim "  watch -n 1 ls src/programs/metronome/-state src/tmp"
+    say ""
+    say_dim "Every tick is a file appearing; every tock is it moving."
+    say_dim "No byte of content is ever written."
+    ;;
+
+  *)
+    # Forward everything else to pith
+    run_pith "$cmd" "$@"
+    ;;
+esac
